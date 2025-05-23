@@ -12,6 +12,9 @@ __all__ = [
     'IndustryAnalysisAgent',
     'PortfolioManagerAgent',
     'TechnicalAnalysisAgent',
+    'RiskManagerAgent',
+    'DeepValueContrarianPersonaAgent',
+    'MarketManipulationAnalystPersonaAgent',
     'SingleAssistant',
     'SingleAssistantShadow',
     'MultiAgentWorkflow'

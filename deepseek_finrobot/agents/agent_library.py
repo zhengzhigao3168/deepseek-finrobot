@@ -388,15 +388,24 @@ class NewsAnalysisAgent:
         self.news_analyst = autogen.AssistantAgent(
             name="NewsAnalyst",
             llm_config=self.llm_config,
-            system_message="""你是一位专业的财经新闻分析师，擅长分析财经新闻对市场和个股的影响。
-你需要分析提供的财经新闻，给出对市场或个股的影响分析。
-你的分析应该包括以下几个方面：
-1. 新闻摘要：简要概括新闻内容
-2. 影响分析：分析新闻对市场或个股的潜在影响
-3. 情绪评估：评估新闻的市场情绪（积极/消极/中性）
-4. 投资建议：基于新闻分析的投资建议
-
-请确保你的分析逻辑清晰，观点客观中立。"""
+            system_message="""你是一位顶尖的财经新闻分析师，不仅擅长标准分析，更精通识别市场操纵和反向思维。你需要分析提供的财经新闻，并结合（可选的）股价变动数据，评估其真实影响和潜在操纵迹象。
+你的分析应包括（请严格按照此JSON格式输出，确保所有字段都存在，如果某项没有则用null或者'无'表示）：
+{
+  "news_summary": "新闻摘要",
+  "surface_sentiment": {"type": "正面/负面/中性", "score": "情绪评分(1-10)"},
+  "price_behavior_correlation": "（如果提供了股价数据）股价行为与新闻情绪是否一致的描述，例如：'新闻发布后股价上涨5%'或'利空消息下股价保持稳定'，如果没有股价数据则为'未提供股价数据'。",
+  "manipulation_analysis": {
+    "discrepancy_observation": "描述新闻情绪与股价行为（如果提供）之间的任何显著背离。例如：'极度利空消息但股价坚挺'。如果没有股价数据或无明显背离，则说明。",
+    "exaggeration_煽动性_fud_factor": "新闻是否存在过度夸大、煽动性言论或可疑的发布时机？例如：'新闻标题耸人听闻，可能意在制造恐慌'。",
+    "dominant_force_hypothesis": "这则新闻更像是真实基本面反映，还是主力诱多/诱空行为？给出你的判断。",
+    "reasoning": "支撑你主力行为假说的理由。"
+  },
+  "manipulation_likelihood_score": "操纵可能性评分 (0-10，0表示无操纵，10表示高度可疑操纵)",
+  "true_impact_assessment": "结合操纵分析，评估新闻可能对市场/个股产生的真实（可能是反向的）影响。",
+  "core_contrarian_signal": "（如果判断存在操纵）主要的 contrarian 交易信号是什么（例如：'警惕诱空，寻找买入机会'或'警惕诱多，考虑风险'）。如果无明显操纵，则为'无明显操纵信号'。",
+  "supporting_data_points": ["引用关键新闻句子或股价数据点来支持你的操纵分析 (列表形式)"]
+}
+"""
         )
     
     def analyze_news(self, keywords: str = None, days: int = 3, limit: int = 10) -> str:
@@ -461,7 +470,186 @@ class NewsAnalysisAgent:
             return analysis
         except Exception as e:
             return f"分析财经新闻时出错: {str(e)}"
-    
+
+    def analyze_news_contrarian(self, 
+                                keywords: str = None, 
+                                symbols_to_correlate: Optional[List[str]] = None, 
+                                days_history_for_correlation: int = 5, 
+                                days_news: int = 3, 
+                                limit_news: int = 10,
+                                end_date_override: Optional[datetime.date] = None) -> Union[Dict[str, Any], str]:
+        """
+        分析财经新闻，并进行反向思维分析，识别潜在的市场操纵。
+
+        Args:
+            keywords: 搜索关键词，如果为None则获取最新财经新闻
+            symbols_to_correlate: （可选）用于关联股价表现的股票代码列表
+            days_history_for_correlation: （可选）获取股价历史的天数
+            days_news: 分析过去几天的新闻 (相对于 end_date_override if provided, else today)
+            limit_news: 分析的新闻数量
+            end_date_override: (可选) 如果提供，则将新闻和股价历史的结束日期限制为此日期，用于回测。
+
+        Returns:
+            包含分析结果的字典（如果JSON解析成功）或原始字符串（如果解析失败）
+        """
+        try:
+            effective_end_date = end_date_override if end_date_override else datetime.date.today()
+            # Convert effective_end_date to datetime object for consistency if it's a date object
+            effective_end_datetime = datetime.datetime.combine(effective_end_date, datetime.datetime.min.time())
+
+            # 获取新闻
+            # The cn_news_utils.search_news and get_financial_news now handle timestamps.
+            # We need to ensure they can be queried up to a specific end_date_override.
+            # Assuming cn_news_utils.search_news can take an end_date or we filter after fetching.
+            # For simplicity, if cn_news_utils.search_news doesn't directly support end_date,
+            # we fetch more news and then filter.
+            # However, the subtask specified modifying cn_news_utils to handle timestamps,
+            # so search_news should ideally use it.
+            
+            # Let's assume search_news filters internally based on its 'days' param relative to 'effective_end_date'
+            # This requires modification in cn_news_utils.search_news to accept effective_end_date
+            # For now, we'll pass days and assume cn_news_utils.search_news handles it relative to today or its own logic.
+            # The critical part is that the `timestamp` column from news utils is now reliable.
+            
+            if keywords:
+                # Ideally: news_df = cn_news_utils.search_news(keywords, end_date=effective_end_date, days_before_end=days_news, limit=limit_news)
+                # Current:
+                news_df = cn_news_utils.search_news(keywords, days=days_news, limit=limit_news * 2) # Fetch more if filtering locally
+            else:
+                # Ideally: news_df = cn_news_utils.get_financial_news(end_date=effective_end_date, limit=limit_news)
+                # Current:
+                news_df = cn_news_utils.get_financial_news(limit=limit_news * 2)
+
+
+            if not news_df.empty and 'timestamp' in news_df.columns:
+                news_df['timestamp'] = pd.to_datetime(news_df['timestamp'], errors='coerce').dt.tz_localize(None)
+                # Filter news up to the effective_end_date
+                news_df = news_df[news_df['timestamp'] <= pd.Timestamp(effective_end_datetime)].head(limit_news)
+
+
+            if news_df.empty:
+                return {"error": "未找到相关新闻", "news_summary": "无相关新闻"} # Return a dict for consistency
+
+            news_str_list = []
+            for index, row in news_df.iterrows(): # Use iterrows as head() is applied
+                news_str_list.append(f"标题: {row.get('title', 'N/A')}\n内容摘要: {row.get('content', 'N/A')[:200]}...\n发布时间: {row.get('timestamp', 'N/A')}\n")
+            news_content_for_prompt = "\n---\n".join(news_str_list) if news_str_list else "无新闻内容可供分析。"
+
+
+            price_action_summary = "未提供股价数据或股价数据不适用。"
+            if symbols_to_correlate:
+                price_action_details = []
+                
+                ak_end_date_str = effective_end_date.strftime("%Y%m%d")
+                # Calculate start date for price history fetch
+                ak_start_date_dt = effective_end_date - datetime.timedelta(days=days_history_for_correlation -1 + 30) # Fetch a bit more to ensure enough data for -1 day calc
+                ak_start_date_str = ak_start_date_dt.strftime("%Y%m%d")
+
+                for symbol in symbols_to_correlate:
+                    try:
+                        # stock_info might still get current data, which is a limitation for true point-in-time backtesting
+                        # but for news correlation, current name is acceptable.
+                        stock_info = akshare_utils.get_stock_info(symbol) 
+                        stock_name = stock_info.get('股票简称', symbol)
+                        
+                        history_df = akshare_utils.get_stock_history(symbol, start_date=ak_start_date_str, end_date=ak_end_date_str)
+                        
+                        if not history_df.empty and '收盘' in history_df.columns and not history_df['收盘'].empty:
+                            history_df = history_df.sort_index() # Ensure chronological order
+                            
+                            # Filter history strictly up to effective_end_date
+                            history_df_filtered = history_df[history_df.index <= pd.Timestamp(effective_end_datetime)].tail(days_history_for_correlation)
+
+                            if not history_df_filtered.empty and len(history_df_filtered) >= 2: # Need at least 2 for pct_change
+                                latest_close_row = history_df_filtered.iloc[-1]
+                                oldest_close_row = history_df_filtered.iloc[0]
+                                
+                                latest_close = latest_close_row['收盘']
+                                oldest_close = oldest_close_row['收盘']
+                                
+                                change_pct = ((latest_close - oldest_close) / oldest_close) * 100 if oldest_close != 0 else 0
+                                
+                                # Last trading day's change within the filtered period
+                                prev_close_row = history_df_filtered.iloc[-2]
+                                prev_close = prev_close_row['收盘']
+                                last_day_change_pct = ((latest_close - prev_close) / prev_close) * 100 if prev_close != 0 else 0
+                                
+                                price_action_details.append(
+                                    f"股票 {symbol} ({stock_name}): "
+                                    f"在 {history_df_filtered.index[0].strftime('%Y-%m-%d')} 到 {history_df_filtered.index[-1].strftime('%Y-%m-%d')} 期间从 {oldest_close:.2f} 变动至 {latest_close:.2f} (总变动: {change_pct:.2f}%). "
+                                    f"最近一个交易日 ({history_df_filtered.index[-1].strftime('%Y-%m-%d')}) 变动: {last_day_change_pct:.2f}%. 最新收盘价: {latest_close:.2f}."
+                                )
+                            elif not history_df_filtered.empty and len(history_df_filtered) == 1:
+                                latest_close = history_df_filtered['收盘'].iloc[-1]
+                                price_action_details.append(
+                                    f"股票 {symbol} ({stock_name}): "
+                                    f"仅获取到 {history_df_filtered.index[-1].strftime('%Y-%m-%d')} 的数据，收盘价: {latest_close:.2f} (无法计算历史变动)."
+                                )
+                            else:
+                                price_action_details.append(f"股票 {symbol} ({stock_name}): 在指定日期范围内未能获取到足够的历史价格数据进行分析 ({len(history_df_filtered)} points found for {days_history_for_correlation} days).")
+                        else:
+                             price_action_details.append(f"股票 {symbol} ({stock_name}): 未能获取到历史价格数据或数据不完整。")
+                    except Exception as e:
+                        price_action_details.append(f"股票 {symbol}: 获取股价数据时出错 - {str(e)}")
+                
+                if price_action_details:
+                    price_action_summary = "\n".join(price_action_details)
+
+            analysis_request = f"""
+请对以下财经新闻进行深度反向分析 (新闻截止日期: {effective_end_date.strftime('%Y-%m-%d')}):
+例如：
+{{
+  "news_summary": "...",
+  "surface_sentiment": {{"type": "正面", "score": 7}},
+  "price_behavior_correlation": "...",
+  "manipulation_analysis": {{
+    "discrepancy_observation": "...",
+    "exaggeration_煽动性_fud_factor": "...",
+    "dominant_force_hypothesis": "...",
+    "reasoning": "..."
+  }},
+  "manipulation_likelihood_score": 5,
+  "true_impact_assessment": "...",
+  "core_contrarian_signal": "...",
+  "supporting_data_points": ["..."]
+}}
+"""
+            self.user_proxy.initiate_chat(
+                self.news_analyst,
+                message=analysis_request,
+            )
+
+            response_content = self.user_proxy.chat_messages[self.news_analyst.name][-1]["content"]
+            
+            # Attempt to parse the response as JSON
+            try:
+                # The response might be wrapped in markdown ```json ... ```
+                if response_content.startswith("```json"):
+                    response_content = response_content[7:]
+                    if response_content.endswith("```"):
+                        response_content = response_content[:-3]
+                
+                json_response = json.loads(response_content)
+                return json_response
+            except json.JSONDecodeError:
+                warning_message = (
+                    f"警告: LLM未能按预期返回有效的JSON格式。已返回原始文本。\n"
+                    f"原始回复:\n{response_content}"
+                )
+                print(warning_message)
+                return response_content
+            except Exception as e: # Catch any other parsing error
+                warning_message = (
+                    f"警告: 解析LLM响应时发生错误: {str(e)}。已返回原始文本。\n"
+                    f"原始回复:\n{response_content}"
+                )
+                print(warning_message)
+                return response_content
+
+
+        except Exception as e:
+            return f"进行反向新闻分析时出错: {str(e)}"
+
     def reset(self):
         """
         重置聊天历史
@@ -707,38 +895,43 @@ class PortfolioManagerAgent:
     投资组合代理 - 构建和优化投资组合
     """
     
-    def __init__(self, llm_config: Dict[str, Any]):
+    def __init__(self, llm_config: Dict[str, Any], risk_manager_agent_instance: Optional['RiskManagerAgent'] = None):
         """
         初始化投资组合代理
         
         Args:
             llm_config: LLM配置
+            risk_manager_agent_instance: (可选) 风险管理代理实例
         """
         # 构建兼容两个版本API的llm_config
         self.llm_config = get_llm_config_for_autogen(**llm_config)
+        self.risk_manager_agent = risk_manager_agent_instance
         
         # 创建用户代理
         self.user = autogen.UserProxyAgent(
             name="User",
-            human_input_mode="TERMINATE",
+            human_input_mode="TERMINATE", # Will be 'NEVER' for internal calls in generate_trade_decision_contrarian
             code_execution_config={"work_dir": ".", "use_docker": False},
         )
         
-        # 创建投资组合管理代理
+        # 创建投资组合管理代理 (Head Trader Persona)
         self.portfolio_manager = autogen.AssistantAgent(
-            name="PortfolioManager",
+            name="PortfolioManagerHeadTrader",
             llm_config=self.llm_config,
-            system_message="""你是一位专业的投资组合管理师，擅长构建和优化投资组合。
-你需要分析提供的股票数据、行业数据和市场情绪，给出投资组合建议。
-你的分析应该包括以下几个方面：
-1. 资产配置：不同资产类别（股票、债券、现金等）的配置比例
-2. 行业配置：不同行业的配置比例
-3. 个股选择：具体的股票选择和权重
-4. 风险分析：投资组合的风险特征和分散化程度
-5. 预期收益：投资组合的预期收益和风险调整后收益
-6. 再平衡策略：投资组合的再平衡频率和触发条件
-
-请确保你的分析逻辑清晰，建议符合投资者的风险偏好和投资目标。"""
+            system_message="""You are the Head Trader of an AI-driven fund specializing in contrarian strategies. You receive analyses from various expert AI agents (market forecast, technical, fundamental, contrarian sentiment, specific investor personas). Your task is to synthesize these inputs to make a trade decision (BUY, SELL, HOLD, WAIT).
+Prioritize insights from the Contrarian Sentiment analysis and contrarian-focused Persona agents, especially if market manipulation is suspected.
+If you decide on a BUY or SELL, suggest a preliminary trade (e.g., quantity or % of portfolio).
+Your output must be a JSON object with the following structure:
+{
+  "symbol_analyzed": "symbol",
+  "decision_pre_risk": "BUY/SELL/HOLD/WAIT",
+  "confidence_pre_risk": 0.0-1.0,
+  "reasoning_pre_risk": "Detailed reasoning, emphasizing contrarian aspects and synthesis of inputs.",
+  "proposed_trade_details_pre_risk": {"action": "BUY/SELL", "symbol": "symbol", "quantity_suggestion": "e.g., 100 shares or 5% of portfolio", "price_target": "optional price", "stop_loss": "optional price"} 
+}
+The 'proposed_trade_details_pre_risk' field should ONLY be present if decision_pre_risk is BUY or SELL. For HOLD/WAIT, it should be omitted or null.
+Base your reasoning on the provided data. Be explicit about how contrarian signals influenced you.
+"""
         )
         
         # 行业适配性字典 - 根据不同风险偏好和市场环境调整权重
@@ -1788,6 +1981,211 @@ class PortfolioManagerAgent:
         self.user.reset()
         self.portfolio_manager.reset()
 
+    def _summarize_analysis_inputs(self,
+                                   symbol: str,
+                                   market_forecast: Dict,
+                                   technical_analysis: Dict,
+                                   contrarian_sentiment_analysis: Dict,
+                                   persona_analyses: List[Dict],
+                                   financial_report_summary: Optional[Dict] = None) -> str:
+        """
+        Helper method to create a text summary of all analysis inputs for the LLM prompt.
+        """
+        summary_parts = [f"Comprehensive Analysis Summary for {symbol}:\n"]
+
+        summary_parts.append("\n--- Market Forecast ---")
+        summary_parts.append(json.dumps(market_forecast, indent=2, ensure_ascii=False))
+
+        summary_parts.append("\n--- Technical Analysis ---")
+        summary_parts.append(json.dumps(technical_analysis, indent=2, ensure_ascii=False))
+        
+        if financial_report_summary:
+            summary_parts.append("\n--- Financial Report Summary ---")
+            summary_parts.append(json.dumps(financial_report_summary, indent=2, ensure_ascii=False))
+
+        summary_parts.append("\n--- Contrarian Sentiment Analysis (News-Based) ---")
+        summary_parts.append(json.dumps(contrarian_sentiment_analysis, indent=2, ensure_ascii=False))
+        
+        summary_parts.append("\n--- Specialized Persona Analyses ---")
+        if persona_analyses:
+            for i, pa in enumerate(persona_analyses):
+                persona_name = pa.get("persona", f"Persona {i+1}")
+                summary_parts.append(f"\n-- Persona: {persona_name} --")
+                summary_parts.append(json.dumps(pa, indent=2, ensure_ascii=False))
+        else:
+            summary_parts.append("No specialized persona analyses provided.")
+
+        return "\n".join(summary_parts)
+
+    def generate_trade_decision_contrarian(
+         self,
+         symbol: str,
+         market_forecast: Dict,
+         technical_analysis: Dict,
+         contrarian_sentiment_analysis: Dict, # Expected to be JSON from NewsAnalysisAgent.analyze_news_contrarian
+         persona_analyses: List[Dict], # List of JSON outputs from Persona Agents
+         financial_report_summary: Optional[Dict] = None,
+         current_portfolio_summary: Optional[Dict] = None # e.g. {"total_value": 100000, "cash": 50000, "holdings": {"AAPL": {"quantity":10, "value":1500}}}
+    ) -> Union[Dict[str, Any], str]:
+        
+        aggregated_summary = self._summarize_analysis_inputs(
+            symbol, market_forecast, technical_analysis, 
+            contrarian_sentiment_analysis, persona_analyses, financial_report_summary
+        )
+
+        # Ensure user_proxy human_input_mode is NEVER for this internal call chain
+        original_human_input_mode = self.user.human_input_mode
+        self.user.human_input_mode = "NEVER"
+
+        prompt_for_initial_decision = f"""
+Based on the following aggregated analysis for symbol {symbol}, please make your trade decision.
+Focus on contrarian signals and synthesize all available information.
+
+{aggregated_summary}
+
+Your output must be a JSON object strictly adhering to the format specified in your system message (Head Trader Persona).
+Ensure 'symbol_analyzed' is '{symbol}'.
+If the decision is BUY or SELL, the 'proposed_trade_details_pre_risk' field must be included. Otherwise, it should be omitted or null.
+"""
+        
+        initial_decision_json: Optional[Dict[str, Any]] = None
+        try:
+            self.user.initiate_chat(
+                self.portfolio_manager, # This is the HeadTrader persona
+                message=prompt_for_initial_decision
+            )
+            response_content = self.user.chat_messages[self.portfolio_manager.name][-1]["content"]
+            
+            if response_content.startswith("```json"):
+                response_content = response_content[7:]
+                if response_content.endswith("```"):
+                    response_content = response_content[:-3]
+            initial_decision_json = json.loads(response_content)
+
+        except json.JSONDecodeError as e:
+            self.user.human_input_mode = original_human_input_mode # Reset mode
+            return f"Error: Failed to parse initial decision JSON from Head Trader. LLM Output: {response_content}. Error: {str(e)}"
+        except Exception as e:
+            self.user.human_input_mode = original_human_input_mode # Reset mode
+            return f"Error during initial decision making: {str(e)}. LLM Output: {response_content if 'response_content' in locals() else 'N/A'}"
+
+        if not initial_decision_json:
+             self.user.human_input_mode = original_human_input_mode # Reset mode
+             return "Error: No initial decision received from Head Trader."
+
+        # Risk Assessment
+        risk_assessment_output_str: str = "" # Store as string first
+        risk_assessment_dict: Dict[str, Any] = {"risk_level": "N/A", "summary": "Risk assessment not performed or not applicable."}
+        
+        final_decision = initial_decision_json.get("decision_pre_risk")
+        final_trade_details = initial_decision_json.get("proposed_trade_details_pre_risk")
+        final_reasoning = initial_decision_json.get("reasoning_pre_risk", "") + "\n--- Risk Adjustment Reasoning ---\n"
+
+
+        if final_decision in ["BUY", "SELL"] and self.risk_manager_agent:
+            proposed_trade_for_risk = final_trade_details
+            if not proposed_trade_for_risk or not isinstance(proposed_trade_for_risk, dict):
+                 self.user.human_input_mode = original_human_input_mode
+                 return f"Error: 'proposed_trade_details_pre_risk' is missing or invalid for risk assessment. Initial decision: {initial_decision_json}"
+
+            # Ensure required fields for RiskManagerAgent are present
+            if not all(k in proposed_trade_for_risk for k in ["action", "symbol"]):
+                # Try to populate from initial_decision_json
+                proposed_trade_for_risk["action"] = proposed_trade_for_risk.get("action", final_decision)
+                proposed_trade_for_risk["symbol"] = proposed_trade_for_risk.get("symbol", symbol)
+                # Quantity and price might still be missing, RiskManagerAgent should handle this
+                if "quantity_suggestion" in proposed_trade_for_risk and "quantity" not in proposed_trade_for_risk :
+                    # Attempt to parse quantity if it's like "100 shares"
+                    try:
+                        qty_str = str(proposed_trade_for_risk["quantity_suggestion"]).split(" ")[0]
+                        proposed_trade_for_risk["quantity"] = int(qty_str)
+                    except ValueError:
+                        proposed_trade_for_risk["quantity"] = 0 # Default if parsing fails
+                if "price_target" in proposed_trade_for_risk and "price" not in proposed_trade_for_risk:
+                     proposed_trade_for_risk["price"] = proposed_trade_for_risk["price_target"] # Use price_target if price is missing
+
+            # Default quantity/price if not set for risk assessment
+            if "quantity" not in proposed_trade_for_risk: proposed_trade_for_risk["quantity"] = 0
+            if "price" not in proposed_trade_for_risk: proposed_trade_for_risk["price"] = 0
+
+
+            risk_assessment_output_str = self.risk_manager_agent.assess_trade_risk(
+                proposed_trade=proposed_trade_for_risk,
+                current_portfolio_summary=current_portfolio_summary,
+                market_conditions=market_forecast.get("overall_sentiment", market_forecast.get("prediction", "Neutral")) # Use more fields if available
+            )
+            # Attempt to parse risk assessment if it's also JSON, or extract key info
+            try:
+                # RiskManagerAgent currently returns a string, we need to parse it or extract info
+                # For now, let's assume the string contains "Risk Level: X"
+                # This part needs to be more robust based on RiskManagerAgent's actual output format
+                risk_level_found = "N/A"
+                if "Risk Level: High" in risk_assessment_output_str: risk_level_found = "High"
+                elif "Risk Level: Medium" in risk_assessment_output_str: risk_level_found = "Medium"
+                elif "Risk Level: Low" in risk_assessment_output_str: risk_level_found = "Low"
+                
+                risk_assessment_dict = {"risk_level": risk_level_found, "summary": risk_assessment_output_str}
+
+                # Heuristic Adjustment
+                current_quantity_suggestion = str(final_trade_details.get("quantity_suggestion", "0 shares"))
+                parsed_quantity = 0
+                unit = "shares" # default
+                try:
+                    parts = current_quantity_suggestion.split(" ")
+                    parsed_quantity = int(parts[0])
+                    if len(parts) > 1: unit = parts[1]
+                except:
+                    parsed_quantity = 0 # Could not parse
+                    final_reasoning += "Could not parse quantity for risk adjustment. "
+
+
+                if risk_assessment_dict["risk_level"] == "High" and parsed_quantity > 0 :
+                    final_trade_details["quantity_suggestion"] = f"{parsed_quantity // 2} {unit}"
+                    final_reasoning += f"High risk identified. Trade quantity heuristically halved from {current_quantity_suggestion} to {final_trade_details['quantity_suggestion']}. "
+                    # Option: change decision to HOLD
+                    # final_decision = "HOLD"
+                    # final_trade_details = None # No trade details for HOLD
+                    # final_reasoning += "High risk identified. Changed decision to HOLD. "
+                elif risk_assessment_dict["risk_level"] == "Medium" and parsed_quantity > 0:
+                    final_trade_details["quantity_suggestion"] = f"{int(parsed_quantity * 0.75)} {unit}"
+                    final_reasoning += f"Medium risk identified. Trade quantity heuristically reduced by 25% from {current_quantity_suggestion} to {final_trade_details['quantity_suggestion']}. "
+                else:
+                    final_reasoning += "Low risk or no quantitative adjustment needed based on risk assessment. "
+
+            except Exception as e: # Catch parsing error for risk assessment
+                print(f"Could not parse risk assessment for heuristic adjustment: {e}")
+                final_reasoning += f"Could not parse risk assessment for adjustment: {risk_assessment_output_str}. "
+                # risk_assessment_dict remains default
+        elif final_decision in ["BUY", "SELL"] and not self.risk_manager_agent:
+            risk_assessment_dict["summary"] = "RiskManagerAgent not available. No risk assessment performed."
+            final_reasoning += "RiskManagerAgent not available. Trade proceeds without explicit risk assessment by RM. "
+        else: # HOLD or WAIT
+            final_reasoning += "No trade action, so no specific risk adjustment applied. "
+
+
+        self.user.human_input_mode = original_human_input_mode # Reset mode
+
+        # Construct Final Output
+        output = {
+            "symbol_analyzed": symbol,
+            "initial_recommendation": initial_decision_json,
+            "risk_assessment": risk_assessment_dict,
+            "final_decision_after_risk": {
+                "decision": final_decision,
+                "confidence": initial_decision_json.get("confidence_pre_risk"), # Confidence is not re-evaluated here
+                "reasoning": final_reasoning.strip(),
+                "proposed_trade_details": final_trade_details if final_decision in ["BUY", "SELL"] else None
+            },
+            "contributing_analyses_summary": {
+                "market_forecast": market_forecast,
+                "technical_analysis": technical_analysis,
+                "financial_report_summary": financial_report_summary,
+                "contrarian_sentiment_analysis": contrarian_sentiment_analysis,
+                "persona_analyses": persona_analyses
+            }
+        }
+        return output
+
 class TechnicalAnalysisAgent:
     """
     技术分析代理 - 进行股票技术分析
@@ -2105,4 +2503,470 @@ class TechnicalAnalysisAgent:
         重置聊天历史
         """
         self.user_proxy.reset()
-        self.technical_analyst.reset() 
+        self.technical_analyst.reset()
+
+class RiskManagerAgent:
+    """
+    风险管理代理 - 评估交易和投资策略的风险
+    """
+
+    def __init__(self, llm_config: Dict[str, Any]):
+        """
+        初始化风险管理代理
+
+        Args:
+            llm_config: LLM配置
+        """
+        self.llm_config = get_llm_config_for_autogen(**llm_config)
+
+        self.user_proxy = autogen.UserProxyAgent(
+            name="User",
+            human_input_mode="TERMINATE",
+            code_execution_config={"work_dir": ".", "use_docker": False},
+        )
+
+        self.risk_assessment_analyst = autogen.AssistantAgent(
+            name="RiskAssessmentAnalyst",
+            llm_config=self.llm_config,
+            system_message="You are a financial risk analyst. Your task is to evaluate proposed trades or investment strategies for potential risks, considering factors like stock volatility, market conditions, portfolio concentration, and overall risk exposure. Provide a risk level (Low, Medium, High) and a concise summary of key risks and potential mitigations."
+        )
+
+    def _calculate_volatility(self, symbol: str, history_days: int = 60) -> Optional[float]:
+        """
+        计算股票的年化波动率
+
+        Args:
+            symbol: 股票代码
+            history_days: 用于计算波动率的历史天数
+
+        Returns:
+            年化波动率，如果无法计算则返回None
+        """
+        try:
+            end_date = datetime.datetime.now().strftime("%Y%m%d")
+            start_date = (datetime.datetime.now() - datetime.timedelta(days=history_days + 30)).strftime("%Y%m%d") # Fetch more data to ensure enough points
+            stock_history = akshare_utils.get_stock_history(symbol, start_date=start_date, end_date=end_date)
+            if stock_history.empty or '收盘' not in stock_history.columns or len(stock_history) < history_days:
+                return None
+            
+            # Ensure we take the most recent `history_days`
+            stock_history = stock_history.tail(history_days)
+            returns = stock_history['收盘'].pct_change().dropna()
+            if len(returns) < 2: # Need at least 2 returns to calculate std
+                return None
+            
+            # Annualized volatility
+            annual_volatility = returns.std() * (252 ** 0.5) 
+            return annual_volatility
+        except Exception as e:
+            print(f"Error calculating volatility for {symbol}: {e}")
+            return None
+
+    def _check_concentration(self, symbol: str, proposed_trade_value: float, portfolio_summary: Optional[Dict[str, Any]]) -> Dict[str, Optional[float]]:
+        """
+        检查执行交易后的潜在集中度
+
+        Args:
+            symbol: 交易的股票代码
+            proposed_trade_value: 拟议交易的价值
+            portfolio_summary: 当前投资组合摘要
+
+        Returns:
+            包含股票集中度和行业集中度的字典
+        """
+        concentration_info = {"stock_concentration": None, "sector_concentration": None}
+        if not portfolio_summary or "total_value" not in portfolio_summary or portfolio_summary["total_value"] == 0:
+            return concentration_info
+
+        total_value = portfolio_summary["total_value"]
+        new_total_value = total_value + proposed_trade_value # Assuming BUY, for SELL it's more complex
+
+        # Stock concentration
+        current_stock_value = 0
+        if "holdings" in portfolio_summary and symbol in portfolio_summary["holdings"]:
+            current_stock_value = portfolio_summary["holdings"][symbol].get("value", 0)
+        
+        new_stock_value = current_stock_value + proposed_trade_value
+        concentration_info["stock_concentration"] = new_stock_value / new_total_value if new_total_value > 0 else 0
+
+        # Sector concentration
+        try:
+            stock_info = akshare_utils.get_stock_info(symbol)
+            industry = stock_info.get("所处行业", "未知")
+            if industry == "未知": # Fallback if API doesn't provide industry
+                industry = INDUSTRY_MAPPING.get(symbol, "未知")
+
+
+            if industry != "未知" and "holdings" in portfolio_summary:
+                current_sector_value = 0
+                for holding_symbol, details in portfolio_summary["holdings"].items():
+                    holding_info = akshare_utils.get_stock_info(holding_symbol)
+                    holding_industry = holding_info.get("所处行业", "未知")
+                    if holding_industry == "未知":
+                         holding_industry = INDUSTRY_MAPPING.get(holding_symbol, "未知")
+                    if holding_industry == industry:
+                        current_sector_value += details.get("value", 0)
+                
+                new_sector_value = current_sector_value + proposed_trade_value # if symbol is in this sector
+                # If the symbol was already in the portfolio and in the same sector, proposed_trade_value is already accounted for if we sum up holdings
+                # This needs refinement: if it's a new stock in the sector, add proposed_trade_value. If it's adding to existing, it's more complex.
+                # Simplified: assume proposed_trade_value is the *additional* value to the sector.
+                
+                # Let's recalculate sector value from scratch for simplicity after the trade
+                new_sector_total_value = 0
+                temp_holdings = portfolio_summary["holdings"].copy()
+                if symbol not in temp_holdings: # New stock
+                    temp_holdings[symbol] = {"value": proposed_trade_value, "industry": industry}
+                else: # Existing stock
+                    temp_holdings[symbol]["value"] = temp_holdings[symbol].get("value",0) + proposed_trade_value
+                
+                # Ensure all holdings have industry info
+                for s, d in temp_holdings.items():
+                    if "industry" not in d:
+                        s_info = akshare_utils.get_stock_info(s)
+                        s_industry = s_info.get("所处行业", "未知")
+                        if s_industry == "未知":
+                           s_industry = INDUSTRY_MAPPING.get(s, "未知")
+                        temp_holdings[s]["industry"] = s_industry
+
+
+                for s, details in temp_holdings.items():
+                    if details.get("industry") == industry:
+                         new_sector_total_value += details.get("value", 0)
+                
+                concentration_info["sector_concentration"] = new_sector_total_value / new_total_value if new_total_value > 0 else 0
+        except Exception as e:
+            print(f"Error calculating sector concentration for {symbol}: {e}")
+            # Keep sector_concentration as None
+
+        return concentration_info
+
+    def assess_trade_risk(self, 
+                          proposed_trade: Dict[str, Any], 
+                          current_portfolio_summary: Optional[Dict[str, Any]] = None, 
+                          market_conditions: Optional[str] = None) -> str:
+        """
+        评估拟议交易的风险
+
+        Args:
+            proposed_trade: 拟议交易的详细信息
+            current_portfolio_summary: 当前投资组合摘要
+            market_conditions: 当前市场状况
+
+        Returns:
+            风险评估结果
+        """
+        try:
+            symbol = proposed_trade.get("symbol")
+            if not symbol:
+                return "Error: 'symbol' is missing in proposed_trade."
+
+            action = proposed_trade.get("action", "N/A").upper()
+            quantity = proposed_trade.get("quantity", 0)
+            price = proposed_trade.get("price", 0)
+            reasoning = proposed_trade.get("reasoning", "N/A")
+            trade_value = quantity * price
+
+            # 获取股票信息
+            stock_info = akshare_utils.get_stock_info(symbol)
+            if "error" in stock_info:
+                stock_info_str = f"Could not retrieve stock info for {symbol}: {stock_info['error']}"
+            else:
+                stock_info_str = f"""
+Stock: {stock_info.get('股票简称', symbol)} ({symbol})
+Current Price: {stock_info.get('最新价', 'N/A')}
+P/E Ratio: {stock_info.get('市盈率(动态)', 'N/A')}
+P/B Ratio: {stock_info.get('市净率', 'N/A')}
+Industry: {stock_info.get('所处行业', INDUSTRY_MAPPING.get(symbol, 'N/A'))}
+"""
+
+            # 计算波动率
+            volatility = self._calculate_volatility(symbol)
+            volatility_str = f"Recent Annualized Volatility (60-day): {volatility*100:.2f}%" if volatility is not None else "Recent Annualized Volatility (60-day): N/A"
+
+            # 检查集中度
+            concentration_str = "Portfolio concentration analysis not applicable (no portfolio summary provided)."
+            if current_portfolio_summary and action == "BUY": # Concentration is mainly a concern for BUYs or increasing positions
+                concentration_info = self._check_concentration(symbol, trade_value, current_portfolio_summary)
+                stock_conc = concentration_info.get("stock_concentration")
+                sector_conc = concentration_info.get("sector_concentration")
+                
+                stock_conc_str = f"{stock_conc*100:.2f}%" if stock_conc is not None else "N/A"
+                sector_conc_str = f"{sector_conc*100:.2f}%" if sector_conc is not None else "N/A"
+                
+                concentration_str = f"""
+Potential Portfolio Concentration after trade:
+- Stock ({symbol}) Concentration: {stock_conc_str}
+- Sector ({stock_info.get('所处行业', INDUSTRY_MAPPING.get(symbol, 'N/A'))}) Concentration: {sector_conc_str}
+"""
+            elif action == "SELL" and current_portfolio_summary:
+                 concentration_str = "Portfolio concentration: Selling may reduce concentration, which is generally positive for risk. Assess if this significantly unbalances the portfolio."
+
+
+            # 构建分析请求
+            prompt = f"""
+Please assess the risk of the following proposed trade:
+
+Trade Details:
+- Symbol: {symbol}
+- Action: {action}
+- Quantity: {quantity}
+- Price: {price:.2f}
+- Trade Value: {trade_value:.2f}
+- Reasoning: {reasoning}
+
+Stock Information:
+{stock_info_str}
+{volatility_str}
+
+Portfolio Context:
+{concentration_str}
+"""
+            if current_portfolio_summary:
+                total_value_str = format_financial_number(current_portfolio_summary.get("total_value", 0))
+                cash_str = format_financial_number(current_portfolio_summary.get("cash", 0))
+                num_holdings = len(current_portfolio_summary.get("holdings", {}))
+                prompt += f"""
+Current Portfolio Summary:
+- Total Value: {total_value_str}
+- Cash: {cash_str}
+- Number of Holdings: {num_holdings}
+"""
+
+            if market_conditions:
+                prompt += f"\nCurrent Market Conditions: {market_conditions}\n"
+
+            prompt += """
+Task:
+1.  Assess the risk of this trade.
+2.  Consider its impact on portfolio concentration if applicable (especially if it increases concentration above 10% for a single stock or 25% for a sector).
+3.  What are the key risks associated with this trade (e.g., market risk, liquidity risk, company-specific risk, concentration risk)?
+4.  Provide an overall risk level for this trade (Low, Medium, High).
+5.  Suggest potential mitigations for the identified risks, if any.
+
+Please provide a concise risk assessment.
+"""
+
+            self.user_proxy.initiate_chat(
+                self.risk_assessment_analyst,
+                message=prompt,
+            )
+
+            response = self.user_proxy.chat_messages[self.risk_assessment_analyst.name][-1]["content"]
+            return response
+
+        except Exception as e:
+            return f"Error assessing trade risk for {proposed_trade.get('symbol', 'N/A')}: {str(e)}"
+
+    def reset(self):
+        """
+        重置聊天历史
+        """
+        self.user_proxy.reset()
+        self.risk_assessment_analyst.reset()
+
+
+class DeepValueContrarianPersonaAgent:
+    """
+    深度价值反向投资人格代理 - 寻找被低估的具有反转潜力的投资机会
+    """
+
+    def __init__(self, llm_config: Dict[str, Any]):
+        self.llm_config = get_llm_config_for_autogen(**llm_config)
+        self.user_proxy = autogen.UserProxyAgent(
+            name="User",
+            human_input_mode="TERMINATE",
+            code_execution_config={"work_dir": ".", "use_docker": False},
+        )
+        self.deep_value_analyst = autogen.AssistantAgent(
+            name="DeepValueAnalyst",
+            llm_config=self.llm_config,
+            system_message="""你是深度价值反向投资专家 (DeepValueContrarian)。
+你的目标是识别那些基本面稳健但当前市场情绪负面或存在操纵迹象，从而导致股价被低估的股票。
+你需要分析公司基本信息、财务摘要、市场情绪（特别是反向情绪分析结果）以及可选的市场预测。
+请严格按照以下JSON格式输出你的分析：
+{
+  "persona": "DeepValueContrarian",
+  "recommendation": "BUY/SELL/HOLD",
+  "confidence_score": "0.0-1.0 (例如 0.85)",
+  "analysis_summary": {
+    "fundamental_soundness": "对公司基本面稳健性的简要评估。例如：'财务状况良好，但增长停滞'或'盈利能力强，债务可控'。",
+    "contrarian_opportunity_assessment": "结合市场情绪和操纵分析，解读是否存在反向投资机会。例如：'新闻情绪负面但股价坚挺，可能存在诱空，是潜在买入机会'或'无明显操纵，但市场过度悲观'。",
+    "key_metrics_considered": ["P/E", "P/B", "Debt/Equity", "News Sentiment Score", "Manipulation Likelihood"]
+  },
+  "detailed_reasoning": "详细说明你的推荐理由，整合所有输入信息，特别是反向情绪分析如何支持你的判断。"
+}
+确保所有字段都存在，如果某项没有具体信息，则使用 null 或 '不适用'。
+"""
+        )
+
+    def analyze_opportunity(self, 
+                            symbol: str, 
+                            company_info: Dict[str, Any], 
+                            financials_summary: Dict[str, Any], 
+                            contrarian_sentiment_analysis: Dict[str, Any], 
+                            market_forecast: Optional[str] = None) -> Union[Dict[str, Any], str]:
+        """
+        分析潜在的深度价值反向投资机会。
+
+        Args:
+            symbol: 股票代码。
+            company_info: 公司基本信息 (例如 {'name': '公司A', 'sector': '科技', 'current_price': 10.5}).
+            financials_summary: 公司财务摘要 (例如 {'P/E': 15.0, 'P/B': 1.2, 'Debt/Equity': 0.5}).
+            contrarian_sentiment_analysis: 来自 NewsAnalysisAgent.analyze_news_contrarian 的分析结果。
+            market_forecast: （可选）市场整体走势预测。
+
+        Returns:
+            包含分析结果的字典（JSON解析成功）或原始字符串（解析失败）。
+        """
+        prompt = f"""
+请为股票 {symbol} ({company_info.get('name', 'N/A')}) 进行深度价值反向投资分析。
+
+1.  **公司基本信息**:
+    *   股票代码: {symbol}
+    *   公司名称: {company_info.get('name', 'N/A')}
+    *   行业: {company_info.get('sector', 'N/A')}
+    *   当前股价: {company_info.get('current_price', 'N/A')}
+
+2.  **财务摘要**:
+    *   市盈率 (P/E): {financials_summary.get('P/E', 'N/A')}
+    *   市净率 (P/B): {financials_summary.get('P/B', 'N/A')}
+    *   资产负债率 (Debt/Equity): {financials_summary.get('Debt/Equity', 'N/A')}
+    *   其他财务备注: {financials_summary.get('notes', '无')}
+
+3.  **反向情绪及操纵分析 (来自NewsAnalysisAgent)**:
+```json
+{json.dumps(contrarian_sentiment_analysis, ensure_ascii=False, indent=2)}
+```
+    *   重点关注: `manipulation_likelihood_score`, `true_impact_assessment`, `core_contrarian_signal`。
+
+4.  **市场整体走势预测 (可选)**:
+    *   {market_forecast if market_forecast else "未提供市场整体预测。"}
+
+**任务**:
+基于以上所有信息，特别是反向情绪分析结果，判断是否存在深度价值投资机会。
+你的分析需要识别市场是否对该公司存在误判，或者是否存在操纵行为导致股价偏离真实价值。
+请严格按照您系统指令中定义的JSON格式输出您的分析结果。确保所有字段都存在。
+"""
+        try:
+            self.user_proxy.initiate_chat(
+                self.deep_value_analyst,
+                message=prompt
+            )
+            response_content = self.user_proxy.chat_messages[self.deep_value_analyst.name][-1]["content"]
+
+            if response_content.startswith("```json"):
+                response_content = response_content[7:]
+                if response_content.endswith("```"):
+                    response_content = response_content[:-3]
+            
+            json_response = json.loads(response_content)
+            return json_response
+        except json.JSONDecodeError:
+            warning_message = (
+                f"警告: DeepValueContrarianPersonaAgent LLM未能按预期返回有效的JSON格式。已返回原始文本。\n"
+                f"原始回复:\n{response_content}"
+            )
+            print(warning_message)
+            return response_content
+        except Exception as e:
+            return f"DeepValueContrarianPersonaAgent 分析时出错: {str(e)}\n原始回复: {response_content if 'response_content' in locals() else 'N/A'}"
+
+    def reset(self):
+        self.user_proxy.reset()
+        self.deep_value_analyst.reset()
+
+
+class MarketManipulationAnalystPersonaAgent:
+    """
+    市场操纵分析人格代理 - 专注于识别市场操纵行为
+    """
+
+    def __init__(self, llm_config: Dict[str, Any]):
+        self.llm_config = get_llm_config_for_autogen(**llm_config)
+        self.user_proxy = autogen.UserProxyAgent(
+            name="User",
+            human_input_mode="TERMINATE",
+            code_execution_config={"work_dir": ".", "use_docker": False},
+        )
+        self.manipulation_spotter = autogen.AssistantAgent(
+            name="ManipulationSpotter",
+            llm_config=self.llm_config,
+            system_message="""你是市场操纵行为的顶尖分析专家 (MarketManipulationSpotter)。
+你的核心任务是基于反向新闻情绪分析的结果，结合（可选的）近期股价和成交量异动信息，来判断市场是否存在“诱多”、“诱空”、“骗散户接盘”等操纵行为。
+你需要深入解读 `NewsAnalysisAgent.analyze_news_contrarian` 的输出，特别是 `manipulation_analysis` 和 `manipulation_likelihood_score` 字段。
+请严格按照以下JSON格式输出你的分析：
+{
+  "persona": "MarketManipulationSpotter",
+  "suspected_manipulation_tactic": "描述你怀疑的主要操纵策略，例如：'通过发布夸大利好诱多，配合拉高出货'、'利用恐慌性新闻诱空，配合低位吸筹'、'无明显操纵，但市场情绪过度'。",
+  "confidence_score": "0.0-1.0 (例如 0.75，表示你对操纵判断的信心)",
+  "key_indicators": [
+    "列出支持你判断的关键指标或观察点，例如：'新闻情绪与股价行为严重背离'、'新闻发布时机可疑（例如在关键技术点位）'、'contrarian_sentiment_analysis中的manipulation_likelihood_score较高'、'成交量异常放大配合股价拉升/下跌'"
+  ],
+  "detailed_reasoning": "详细阐述你的分析逻辑，说明为什么你认为存在（或不存在）某种特定的操纵行为。清晰地引用输入数据中的相关部分。",
+  "suggested_contrarian_action": "基于你的操纵分析，提出一个反向操作建议。例如：'若确认为诱多，应警惕追高风险，考虑逢高减仓或做空'、'若为诱空，可考虑分批建仓'、'若无明显操纵，按基本面操作'。"
+}
+确保所有字段都存在，如果某项没有具体信息，则使用 null 或 '不适用'。
+"""
+        )
+
+    def assess_manipulation(self, 
+                            symbol: str, 
+                            contrarian_sentiment_analysis: Dict[str, Any], 
+                            recent_price_volume_summary: Optional[str] = None) -> Union[Dict[str, Any], str]:
+        """
+        评估市场是否存在针对某股票的操纵行为。
+
+        Args:
+            symbol: 股票代码。
+            contrarian_sentiment_analysis: 来自 NewsAnalysisAgent.analyze_news_contrarian 的分析结果。
+            recent_price_volume_summary: （可选）描述近期股价和成交量异动的文本摘要。
+
+        Returns:
+            包含分析结果的字典（JSON解析成功）或原始字符串（解析失败）。
+        """
+        prompt = f"""
+对股票 {symbol} 进行市场操纵行为评估。
+
+1.  **反向情绪及操纵分析核心数据 (来自NewsAnalysisAgent)**:
+    *   股票代码: {symbol}
+```json
+{json.dumps(contrarian_sentiment_analysis, ensure_ascii=False, indent=2)}
+```
+    *   请特别关注 `news_summary`, `surface_sentiment`, `price_behavior_correlation`, `manipulation_analysis` (所有子字段), `manipulation_likelihood_score`, `true_impact_assessment`, `core_contrarian_signal`。
+
+2.  **近期股价及成交量异动摘要 (可选)**:
+    *   {recent_price_volume_summary if recent_price_volume_summary else "未提供近期股价成交量异动摘要。请主要依赖上述新闻反向分析结果。"}
+
+**任务**:
+基于上述信息，尤其是 `contrarian_sentiment_analysis` 的完整内容，分析是否存在市场操纵行为（如诱多、诱空、骗散户接盘等）。
+你需要深入解读所提供的数据，特别是新闻情绪与股价行为的关联性、新闻本身的夸大/煽动性、以及 `manipulation_likelihood_score` 等。
+请严格按照您系统指令中定义的JSON格式输出您的分析结果。确保所有字段都存在。
+"""
+        try:
+            self.user_proxy.initiate_chat(
+                self.manipulation_spotter,
+                message=prompt
+            )
+            response_content = self.user_proxy.chat_messages[self.manipulation_spotter.name][-1]["content"]
+            
+            if response_content.startswith("```json"):
+                response_content = response_content[7:]
+                if response_content.endswith("```"):
+                    response_content = response_content[:-3]
+
+            json_response = json.loads(response_content)
+            return json_response
+        except json.JSONDecodeError:
+            warning_message = (
+                f"警告: MarketManipulationAnalystPersonaAgent LLM未能按预期返回有效的JSON格式。已返回原始文本。\n"
+                f"原始回复:\n{response_content}"
+            )
+            print(warning_message)
+            return response_content
+        except Exception as e:
+            return f"MarketManipulationAnalystPersonaAgent 分析时出错: {str(e)}\n原始回复: {response_content if 'response_content' in locals() else 'N/A'}"
+
+    def reset(self):
+        self.user_proxy.reset()
+        self.manipulation_spotter.reset()

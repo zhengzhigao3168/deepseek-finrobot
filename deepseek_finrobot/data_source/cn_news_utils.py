@@ -22,26 +22,50 @@ def get_financial_news(limit: int = 20) -> pd.DataFrame:
     """
     try:
         # 获取东方财富网财经新闻
-        df = ak.stock_news_em()
+        df = ak.stock_news_em() # Columns: code, title, content, publishtime, source
         
-        # 检查并处理列名变化问题
+        # 检查并处理列名变化问题 (旧逻辑，保留以防万一)
         if 'content' not in df.columns and '内容' in df.columns:
             df = df.rename(columns={'内容': 'content'})
         if 'title' not in df.columns and '标题' in df.columns:
             df = df.rename(columns={'标题': 'title'})
         
+        # 标准化时间戳
+        if 'publishtime' in df.columns:
+            df = df.rename(columns={'publishtime': 'timestamp'})
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        elif 'datetime' in df.columns: # 有些akshare接口可能返回datetime
+             df = df.rename(columns={'datetime': 'timestamp'})
+             df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        else:
+            # 如果没有明确的时间戳列，则创建一个，并用当前时间填充（作为最后手段）
+            print("警告: stock_news_em 未找到 'publishtime' 或 'datetime' 列，将使用当前时间作为时间戳。")
+            df['timestamp'] = pd.to_datetime(datetime.datetime.now(), errors='coerce')
+
         # 如果仍然没有content列，创建一个
         if 'content' not in df.columns:
             # 使用第一列（通常是标题）作为内容
             df['content'] = df.apply(lambda row: row.iloc[0] if len(row) > 0 else "", axis=1)
-            print("警告: 新闻数据结构已变化，已自动适配")
+            print("警告: 新闻数据结构已变化，已自动适配 content 列")
             
         # 确保title列存在
         if 'title' not in df.columns:
-            first_col_name = df.columns[0] if len(df.columns) > 0 else "新闻"
-            df['title'] = df[first_col_name]
-            print(f"警告: 新闻标题列不存在，已使用{first_col_name}列作为标题")
+            if len(df.columns) > 0:
+                first_col_name = df.columns[0]
+                df['title'] = df[first_col_name]
+                print(f"警告: 新闻标题列不存在，已使用 {first_col_name} 列作为标题")
+            else:
+                df['title'] = "无标题"
         
+        # 确保返回的列是标准化的
+        required_cols = ['timestamp', 'title', 'content']
+        for col in required_cols:
+            if col not in df.columns:
+                df[col] = "N/A" if col != 'timestamp' else pd.NaT
+        
+        df = df[required_cols + [col for col in df.columns if col not in required_cols]]
+
+
         if limit and len(df) > limit:
             df = df.head(limit)
             
@@ -49,7 +73,7 @@ def get_financial_news(limit: int = 20) -> pd.DataFrame:
     except Exception as e:
         print(f"获取财经新闻时出错: {e}")
         # 返回一个包含必要列的空DataFrame
-        return pd.DataFrame(columns=['title', 'content'])
+        return pd.DataFrame(columns=['timestamp', 'title', 'content'])
 
 def get_stock_news_sina(symbol: str, limit: int = 10) -> pd.DataFrame:
     """
@@ -60,104 +84,163 @@ def get_stock_news_sina(symbol: str, limit: int = 10) -> pd.DataFrame:
         limit: 返回的新闻数量
         
     Returns:
-        股票新闻DataFrame
+        股票新闻DataFrame (columns: title, content, timestamp, source)
     """
     try:
-        # 获取新浪财经股票新闻
+        # 获取新浪财经股票新闻 (columns: title, content, public_time, source)
         df = ak.stock_news_sina(symbol=symbol)
         
+        if 'public_time' in df.columns:
+            df = df.rename(columns={'public_time': 'timestamp'})
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        else:
+            print("警告: stock_news_sina 未找到 'public_time' 列，将使用当前时间作为时间戳。")
+            df['timestamp'] = pd.to_datetime(datetime.datetime.now(), errors='coerce')
+
+        # 确保返回的列是标准化的
+        required_cols = ['timestamp', 'title', 'content', 'source']
+        for col in required_cols:
+            if col not in df.columns:
+                df[col] = "N/A" if col != 'timestamp' else pd.NaT
+        
+        df = df[required_cols + [col for col in df.columns if col not in required_cols]]
+
+
         if limit and len(df) > limit:
             df = df.head(limit)
             
         return df
     except Exception as e:
         print(f"获取新浪财经股票新闻时出错: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=['timestamp', 'title', 'content', 'source'])
 
 def get_major_news() -> pd.DataFrame:
     """
     获取重大财经新闻
     
     Returns:
-        重大财经新闻DataFrame
+        重大财经新闻DataFrame (columns: timestamp, title, content)
     """
+    df = pd.DataFrame()
     try:
-        # 获取金十数据重大财经新闻
-        df = ak.js_news()
+        # 获取金十数据重大财经新闻 (columns: datetime, content, important, source, url)
+        df_js = ak.js_news()
+        if not df_js.empty:
+            if 'datetime' in df_js.columns:
+                df_js = df_js.rename(columns={'datetime': 'timestamp'})
+                df_js['timestamp'] = pd.to_datetime(df_js['timestamp'], errors='coerce')
+            else:
+                 df_js['timestamp'] = pd.to_datetime(datetime.datetime.now(), errors='coerce') # Fallback
+
+            # 'content' is usually the title for js_news, let's assume we want a separate title if possible
+            # For js_news, the 'content' column often serves as the title. 
+            # We'll use 'content' as 'title' and provide a placeholder for 'content' or use 'content' for both.
+            if 'content' in df_js.columns and 'title' not in df_js.columns:
+                 df_js = df_js.rename(columns={'content': 'title'})
+                 df_js['content'] = df_js['title'] # Or some other placeholder if detailed content is elsewhere
+            
+            df = df_js
+            print("金十数据重大财经新闻获取成功")
         
-        return df
     except Exception as e:
-        print(f"获取重大财经新闻时出错: {e}")
+        print(f"获取金十数据重大财经新闻时出错: {e}")
+        # Fallback logic remains below
+
+    if df.empty: # If js_news failed or returned empty
+        print("尝试使用替代接口获取重大财经新闻...")
         try:
-            # 尝试替代接口
-            print("尝试使用替代接口获取重大财经新闻...")
-            
-            # 尝试其他可能的函数名
-            try:
-                # 尝试东财快讯
-                df = ak.stock_zh_a_alerts_cls()
+            # 尝试东财快讯 (stock_zh_a_alerts_cls: time, title, content)
+            df_alerts = ak.stock_zh_a_alerts_cls()
+            if not df_alerts.empty and 'time' in df_alerts.columns:
+                df_alerts = df_alerts.rename(columns={'time': 'timestamp'})
+                # Need to combine date with time if 'time' is just HH:MM:SS
+                # Assuming 'time' column might just be time, prepend current date
+                current_date_str = datetime.datetime.now().strftime('%Y-%m-%d')
+                df_alerts['timestamp'] = pd.to_datetime(current_date_str + ' ' + df_alerts['timestamp'].astype(str), errors='coerce')
+                df = df_alerts
                 print("使用东财快讯获取重大新闻成功")
-            except:
+            else: # Try other fallbacks
                 try:
-                    # 尝试财联社电报
-                    df = ak.stock_telegraph_cls()
-                    print("使用财联社电报获取重大新闻成功")
-                except:
-                    try:
-                        # 尝试新浪财经
-                        df = ak.stock_zh_a_news()
-                        print("使用新浪财经新闻获取重大新闻成功")
-                    except:
-                        # 尝试获取CCTV新闻
-                        df = ak.news_cctv()
-                        print("使用CCTV新闻获取重大新闻成功")
-            
-            # 确保有标题和内容列
-            if 'title' not in df.columns and '标题' in df.columns:
-                df = df.rename(columns={'标题': 'title'})
-            if 'content' not in df.columns and '内容' in df.columns:
-                df = df.rename(columns={'内容': 'content'})
-                
-            # 如果仍然没有必要列，尝试基于列名智能映射
-            if 'title' not in df.columns:
-                title_candidates = [c for c in df.columns if '标题' in c or '题目' in c or 'title' in c.lower() or '头条' in c]
-                if title_candidates:
-                    df = df.rename(columns={title_candidates[0]: 'title'})
-                else:
-                    # 使用第一列作为标题
-                    df['title'] = df.iloc[:, 0] if len(df.columns) > 0 else "无标题"
-                    
-            if 'content' not in df.columns:
-                content_candidates = [c for c in df.columns if '内容' in c or '正文' in c or 'content' in c.lower() or '描述' in c or 'desc' in c.lower()]
-                if content_candidates:
-                    df = df.rename(columns={content_candidates[0]: 'content'})
-                else:
-                    # 使用标题作为内容
-                    df['content'] = df['title'] if 'title' in df.columns else "无内容"
-            
-            return df.head(10)  # 仅返回前10条重大新闻
-            
+                    # 尝试财联社电报 (stock_telegraph_cls: ctime, title, content)
+                    df_cls = ak.stock_telegraph_cls()
+                    if not df_cls.empty and 'ctime' in df_cls.columns:
+                        df_cls['timestamp'] = pd.to_datetime(df_cls['ctime'], unit='ms', errors='coerce') # ctime is often unix ms
+                        df = df_cls
+                        print("使用财联社电报获取重大新闻成功")
+                    else:
+                        # 尝试新浪财经 (stock_zh_a_news: time, title, content) - often has full datetime
+                        df_sina = ak.stock_zh_a_news()
+                        if not df_sina.empty and 'time' in df_sina.columns:
+                             df_sina = df_sina.rename(columns={'time': 'timestamp'})
+                             df_sina['timestamp'] = pd.to_datetime(df_sina['timestamp'], errors='coerce')
+                             df = df_sina
+                             print("使用新浪财经新闻获取重大新闻成功")
+                        else:
+                            # 尝试获取CCTV新闻 (news_cctv: date, title, content)
+                            df_cctv = ak.news_cctv()
+                            if not df_cctv.empty and 'date' in df_cctv.columns:
+                                df_cctv = df_cctv.rename(columns={'date': 'timestamp'})
+                                df_cctv['timestamp'] = pd.to_datetime(df_cctv['timestamp'], errors='coerce')
+                                df = df_cctv
+                                print("使用CCTV新闻获取重大新闻成功")
+                except Exception as fallback_e:
+                     print(f"尝试替代新闻接口时出错: {fallback_e}")
+
+
+            if df.empty: # If all API fallbacks failed
+                print(f"所有替代接口获取重大财经新闻均失败。创建模拟数据。")
+                current_datetime_obj = datetime.datetime.now()
+                data = {
+                    'title': [
+                        f"财政部发布重要经济政策 ({current_datetime_obj.strftime('%Y-%m-%d')})",
+                        f"央行宣布调整利率政策 ({current_datetime_obj.strftime('%Y-%m-%d')})",
+                        f"国务院推出经济刺激方案 ({current_datetime_obj.strftime('%Y-%m-%d')})"
+                    ],
+                    'content': [
+                        "财政部今日发布一系列扶持实体经济的新政策，包括减税降费、支持中小企业发展等措施。",
+                        "中国人民银行发布公告，宣布下调存款准备金率0.5个百分点，为市场注入流动性。",
+                        "国务院常务会议决定，推出一揽子政策促进经济稳定增长，包括基建投资加码、消费刺激等多项举措。"
+                    ],
+                    'timestamp': [pd.to_datetime(current_datetime_obj - datetime.timedelta(hours=i), errors='coerce') for i in range(3)]
+                }
+                df = pd.DataFrame(data)
+
         except Exception as inner_e:
-            print(f"使用替代接口获取重大财经新闻时出错: {inner_e}")
+            print(f"处理替代接口或创建模拟数据时出错: {inner_e}")
+            # Ensure df is an empty DataFrame with correct columns if all else fails
+            df = pd.DataFrame(columns=['timestamp', 'title', 'content'])
+    
+    # Standardize columns for the final DataFrame
+    if 'title' not in df.columns:
+        title_candidates = [c for c in df.columns if '标题' in c or '题目' in c or 'title' in c.lower() or '头条' in c]
+        if title_candidates:
+            df = df.rename(columns={title_candidates[0]: 'title'})
+        elif len(df.columns) > 0 and 'timestamp' in df.columns and df.columns[0] != 'timestamp': # use first non-timestamp col
+             df = df.rename(columns={df.columns[0]: 'title'})
+        elif len(df.columns) > 1: # use second col if first is timestamp
+            df = df.rename(columns={df.columns[1]: 'title'})
+        else:
+            df['title'] = "无标题"
             
-            # 创建一个模拟数据
-            current_date = datetime.datetime.now().strftime("%Y-%m-%d")
-            data = {
-                'title': [
-                    f"财政部发布重要经济政策 ({current_date})",
-                    f"央行宣布调整利率政策 ({current_date})",
-                    f"国务院推出经济刺激方案 ({current_date})"
-                ],
-                'content': [
-                    "财政部今日发布一系列扶持实体经济的新政策，包括减税降费、支持中小企业发展等措施。",
-                    "中国人民银行发布公告，宣布下调存款准备金率0.5个百分点，为市场注入流动性。",
-                    "国务院常务会议决定，推出一揽子政策促进经济稳定增长，包括基建投资加码、消费刺激等多项举措。"
-                ]
-            }
-            return pd.DataFrame(data)
-        
-        # 如果所有尝试都失败，返回一个空DataFrame
-        return pd.DataFrame(columns=['title', 'content'])
+    if 'content' not in df.columns:
+        content_candidates = [c for c in df.columns if '内容' in c or '正文' in c or 'content' in c.lower() or '描述' in c or 'desc' in c.lower()]
+        if content_candidates:
+            df = df.rename(columns={content_candidates[0]: 'content'})
+        else:
+            # Use title as content if content is missing
+            df['content'] = df['title'] if 'title' in df.columns else "无内容"
+
+    if 'timestamp' not in df.columns:
+        df['timestamp'] = pd.to_datetime(datetime.datetime.now(), errors='coerce') # Last resort timestamp
+
+    # Ensure required columns are present, even if empty
+    final_cols = ['timestamp', 'title', 'content']
+    for col in final_cols:
+        if col not in df.columns:
+            df[col] = pd.NaT if col == 'timestamp' else "N/A"
+            
+    return df[final_cols].head(10) # Return top 10
+
 
 def get_cctv_news() -> pd.DataFrame:
     """
@@ -621,38 +704,49 @@ def search_news(keywords: str, days: int = 7, limit: int = 10) -> pd.DataFrame:
         # 确保content列存在
         if 'content' not in df.columns:
             print("警告: 新闻内容列不存在，无法搜索新闻")
-            return pd.DataFrame(columns=['title', 'content'])
+            return pd.DataFrame(columns=['timestamp', 'title', 'content'])
         
         # 计算开始日期
-        start_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+        start_date_object = pd.to_datetime(datetime.datetime.now() - datetime.timedelta(days=days)).tz_localize(None) # Ensure tz-naive for comparison
+        
+        # 确保timestamp列是datetime对象并且是tz-naive
+        if 'timestamp' not in df.columns:
+            print("警告: 'timestamp' 列不存在于 get_financial_news 返回的数据中，无法按日期过滤。")
+            # Fallback: try to find any date-like column if 'timestamp' is missing
+            date_col_found = False
+            for col_name in ['date', '日期', 'datetime', 'time', 'publishtime', 'public_time']:
+                if col_name in df.columns:
+                    df['timestamp'] = pd.to_datetime(df[col_name], errors='coerce').dt.tz_localize(None)
+                    date_col_found = True
+                    break
+            if not date_col_found:
+                 return pd.DataFrame(columns=['timestamp', 'title', 'content']) # Cannot filter by date
+        else:
+            if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+                 df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            if df['timestamp'].dt.tz is not None: # If still tz-aware, make it naive
+                df['timestamp'] = df['timestamp'].dt.tz_localize(None)
         
         # 过滤日期范围
-        if 'date' in df.columns:
-            df = df[df['date'] >= start_date]
-        elif '日期' in df.columns:
-            df = df[df['日期'] >= start_date]
-        elif 'datetime' in df.columns:
-            df = df[df['datetime'] >= start_date]
+        df = df[df['timestamp'] >= start_date_object]
         
         # 过滤关键词
         try:
-            content_mask = df['content'].str.contains(keywords, na=False)
-            title_mask = df['title'].str.contains(keywords, na=False) if 'title' in df.columns else pd.Series([False] * len(df))
+            content_mask = df['content'].str.contains(keywords, na=False, case=False)
+            title_mask = df['title'].str.contains(keywords, na=False, case=False) if 'title' in df.columns else pd.Series([False] * len(df))
             df = df[content_mask | title_mask]
         except Exception as e:
             print(f"过滤关键词时出错: {e}")
-            # 尝试在标题中搜索
-            if 'title' in df.columns:
-                df = df[df['title'].str.contains(keywords, na=False)]
+            # 尝试在标题中搜索 (already part of title_mask)
         
         if limit and len(df) > limit:
             df = df.head(limit)
             
-        return df
+        return df[['timestamp', 'title', 'content'] + [col for col in df.columns if col not in ['timestamp', 'title', 'content']]]
     except Exception as e:
         print(f"搜索新闻时出错: {e}")
         # 返回一个包含必要列的空DataFrame
-        return pd.DataFrame(columns=['title', 'content'])
+        return pd.DataFrame(columns=['timestamp', 'title', 'content'])
 
 def get_stock_hot_rank() -> pd.DataFrame:
     """

@@ -248,10 +248,33 @@ def get_stock_news(limit: int = 10) -> pd.DataFrame:
             
         # 确保title列存在
         if 'title' not in df.columns:
-            first_col_name = df.columns[0] if len(df.columns) > 0 else "新闻"
-            df['title'] = df[first_col_name]
-            print(f"警告: 新闻标题列不存在，已使用{first_col_name}列作为标题")
+            if len(df.columns) > 0:
+                first_col_name = df.columns[0]
+                df['title'] = df[first_col_name]
+                print(f"警告: 新闻标题列不存在，已使用 {first_col_name} 列作为标题")
+            else:
+                df['title'] = "无标题"
+
+        # 标准化时间戳
+        if 'publishtime' in df.columns:
+            df = df.rename(columns={'publishtime': 'timestamp'})
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        elif 'datetime' in df.columns: # Fallback for other possible akshare naming
+            df = df.rename(columns={'datetime': 'timestamp'})
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        else:
+            print("警告: get_stock_news 未找到 'publishtime' 或 'datetime' 列，将使用当前时间作为时间戳。")
+            df['timestamp'] = pd.to_datetime(datetime.datetime.now(), errors='coerce')
         
+        # 确保返回的列是标准化的
+        required_cols = ['timestamp', 'title', 'content']
+        for col in required_cols:
+            if col not in df.columns:
+                df[col] = pd.NaT if col == 'timestamp' else "N/A" # NaT for timestamp, N/A for text
+        
+        # Ensure correct column order with other potential columns at the end
+        df = df[required_cols + [col for col in df.columns if col not in required_cols]]
+
         if limit and len(df) > limit:
             df = df.head(limit)
             
@@ -259,7 +282,7 @@ def get_stock_news(limit: int = 10) -> pd.DataFrame:
     except Exception as e:
         print(f"获取股票新闻时出错: {e}")
         # 返回一个包含必要列的空DataFrame
-        return pd.DataFrame(columns=['title', 'content'])
+        return pd.DataFrame(columns=['timestamp', 'title', 'content'])
 
 def get_stock_industry_news(industry: str, limit: int = 10) -> pd.DataFrame:
     """
